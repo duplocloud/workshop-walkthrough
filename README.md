@@ -476,6 +476,254 @@ Your workshop environment stays available after the session. Here are some direc
 
 ---
 
+## Addendum: Keeping Your Extensions After the Workshop
+
+Your workshop instance stays available for a while after the session, but not forever. Everything you built lives in the DevKit checkout inside Code Server — which is an ordinary git repository. DevKit ships a script, `scripts/init-project.sh`, that *adopts* that checkout: it re-points it at a repository **you** own. What you end up with is your own copy of the DevKit framework — the platform `docker-compose.yml`, the build and deploy scripts, the samples, and the Claude skills — with the extensions you authored sitting alongside it in `extensions/`.
+
+This section walks through that end to end. It assumes nothing about how you authenticate to GitHub — both HTTPS and SSH are covered.
+
+---
+
+### What You'll Need First
+
+| Requirement | Notes |
+|---|---|
+| A GitHub account | Personal or work, either is fine |
+| **A repository you have created yourself** | `init-project.sh` does **not** create one for you — it only pushes to a remote that already exists |
+| A way to authenticate | A personal access token over HTTPS, **or** an SSH key. Pick one in Step A2 |
+
+> **The workshop GitHub scope is not this.** The GitHub scope you used for the Terraform remediation in Step 7 is a workshop-provided token scoped to the sample repository. It is not yours and cannot push to your own repo — you need your own credential below.
+
+---
+
+### Step A1: Create an Empty Repository on GitHub
+
+1. Go to [github.com/new](https://github.com/new).
+2. Give it a name that reflects what it holds — the DevKit framework *and* your extensions. For example `my-duplo-devkit`.
+3. Set the visibility to **Private**.
+
+   > ⚠️ **Choose Private unless you have checked the licensing.** The DevKit checkout includes `packages/duplocloud-internal-ng-common-lib-*.tgz` — the compiled DuploCloud UI library. It is proprietary DuploCloud IP, **not** open source, and it is deliberately tracked by git so builds work on a plain clone. You may build your extensions against it; you may not republish it. A private repository keeps you on the right side of that. See `TERMS.md` and `NOTICE` in the DevKit repo for the full boundary.
+
+4. **Do not** tick *Add a README file*, and leave *Add .gitignore* and *Choose a license* set to **None**. The repository must be completely empty — `init-project.sh` creates a fresh commit history, and pushing that into a repo which already has a commit will be rejected.
+5. Copy the repository URL from the green **Code** button. You want one of:
+   - HTTPS — `https://github.com/<your-user>/<your-repo>.git`
+   - SSH — `git@github.com:<your-user>/<your-repo>.git`
+
+---
+
+### Step A2: Set Up Authentication
+
+Pick **one** of the two options below. Where a step gives a command, run it in a Code Server terminal (right-click the grey area → **New Terminal**) — not at the Claude prompt.
+
+If you chose an HTTPS repository URL in Step A1, the first route in Option 1 needs no setup here at all — Code Server signs you in when you push, so you can skim it now and come back at Step A5.
+
+#### Option 1: HTTPS
+
+The simplest route, and the one to use if you have never set up an SSH key. There are three ways to get a credential in place — try them in this order.
+
+**Let Code Server sign you in (no token to create).**
+
+Code Server ships VS Code's built-in GitHub authentication, which can handle an HTTPS push for you over OAuth — you never create, paste, or store a token.
+
+1. Complete Step A4 first, so the repository has a commit and an `origin` remote.
+2. Open the **Source Control** view in Code Server (the branch icon in the left-hand activity bar, or **Ctrl/Cmd + Shift + G**).
+3. Click **Sync Changes** / **Publish Branch**, or use the **···** menu → **Push**.
+4. A prompt appears asking to sign in to GitHub. Click **Allow**, complete the sign-in and authorisation in the browser tab that opens, then return to Code Server.
+5. If the browser hands you back a code instead of returning automatically, paste it into the input box Code Server shows at the top of the window.
+
+Code Server stores the resulting credential for you, so subsequent pushes — including ones you run with `git push` in a terminal — go through without prompting.
+
+> **If no sign-in prompt appears**, the GitHub authentication provider isn't enabled in this Code Server build, or the browser flow was blocked by a popup blocker. Nothing is broken — just use one of the two token routes below instead.
+
+**If the `gh` CLI is available** (check with `gh --version`):
+
+```bash
+gh auth login
+```
+
+Choose **GitHub.com** → **HTTPS** → **Yes** when asked to authenticate git with your GitHub credentials → then either paste a token or complete the browser flow. This configures a git credential helper for you, so pushes just work afterwards.
+
+**Or create a token by hand:**
+
+1. Create a token at [github.com/settings/tokens](https://github.com/settings/tokens):
+   - *Fine-grained token* — grant it access to only your new repository, with **Contents: Read and write**, or
+   - *Classic token* — tick the **repo** scope.
+2. Copy the token (GitHub shows it once).
+3. Tell git to remember it:
+
+   ```bash
+   git config --global credential.helper store
+   ```
+
+4. On your first push you'll be prompted for a username and password. Enter your GitHub username, and **paste the token as the password** — GitHub has not accepted account passwords over HTTPS for years.
+
+> **Token hygiene:** `credential.helper store` writes the token in plain text to `~/.git-credentials` on a shared, temporary workshop instance. Use `git config --global credential.helper 'cache --timeout=3600'` instead if you'd rather it lived only in memory, and revoke the token from GitHub when you're finished with the instance either way. Avoid embedding the token in the remote URL (`https://<token>@github.com/...`) — it ends up recorded in `.git/config` and visible in `git remote -v`.
+
+#### Option 2: SSH Key
+
+Use this if you prefer keys, or already work this way.
+
+1. Generate a key (press **Enter** at each prompt to accept the defaults):
+
+   ```bash
+   ssh-keygen -t ed25519 -C "you@example.com"
+   ```
+
+2. Print the **public** half and copy it:
+
+   ```bash
+   cat ~/.ssh/id_ed25519.pub
+   ```
+
+3. Go to [github.com/settings/keys](https://github.com/settings/keys) → **New SSH key**, give it a title such as `duplo-workshop`, paste the key, and save.
+4. Verify the connection — type `yes` if asked about host authenticity:
+
+   ```bash
+   ssh -T git@github.com
+   ```
+
+   You should see `Hi <your-user>! You've successfully authenticated...`.
+5. Use the `git@github.com:` form of the repository URL in Step A4.
+
+---
+
+### Step A3: Set Your Git Identity
+
+The adoption script makes a commit, which fails if git doesn't know who you are:
+
+```bash
+git config --global user.name "Your Name"
+git config --global user.email "you@example.com"
+```
+
+---
+
+### Step A4: Adopt the DevKit Checkout
+
+1. In a terminal, change into the DevKit root — the directory containing `run.sh`, `scripts/`, and `extensions/`:
+
+   ```bash
+   cd ~/devkit        # adjust if your checkout is elsewhere
+   ls                 # you should see run.sh, scripts/, extensions/, docker-compose.yml
+   ```
+
+2. Confirm your extensions are where you expect:
+
+   ```bash
+   ls extensions/
+   ```
+
+   You should see the SOC 2 Posture and Ephemeral Environments directories you worked on.
+
+3. Run the adoption script, passing **your** repository URL:
+
+   ```bash
+   ./scripts/init-project.sh https://github.com/<your-user>/<your-repo>.git
+   ```
+
+   Or, if you set up SSH:
+
+   ```bash
+   ./scripts/init-project.sh git@github.com:<your-user>/<your-repo>.git
+   ```
+
+What the script does:
+
+- Records where the framework came from in `.devkit-version`, so future upgrades pull from the official DuploCloud source rather than your fork.
+- Replaces the DevKit git history with a single fresh commit and points `origin` at your repository. Pass `--keep-history` instead if you'd rather retain the upstream history and simply re-point the remote.
+- Commits everything that isn't gitignored — including both of the extensions you built.
+- Leaves your `extensions/` directory exactly as it is.
+
+---
+
+### Step A5: Check What You're About to Publish, Then Push
+
+Adoption commits locally; nothing has left the instance yet. Check the commit first:
+
+```bash
+git status
+git show --stat HEAD | head -40
+```
+
+Two things worth confirming:
+
+- **`.env` must not be in the commit.** It holds your workshop licence registration and LLM credentials. The bundled `.gitignore` excludes `.env*`, but check rather than assume.
+- **`extensions/terraform/` is absent by design.** That extension's source is fetched by `run.sh` rather than authored by you, so it's gitignored and will be re-fetched on your own machine.
+
+Then push:
+
+```bash
+git push -u origin main
+```
+
+- Over **HTTPS**, if you signed in through Code Server or ran `gh auth login`, the stored credential is used and you won't be prompted. Otherwise you'll be asked for your username and token.
+- Over **SSH** your key is used and you won't be prompted.
+
+> **Pushing from the Source Control view instead:** if you took the Code Server sign-in route in Step A2, push from the **Source Control** panel (**Sync Changes** / **Publish Branch**) rather than the terminal the first time — that is what triggers the GitHub sign-in prompt. Once you've signed in, `git push` in a terminal works too.
+
+Refresh the repository page on GitHub — your extensions and the DevKit framework should now be there.
+
+> **If the push is rejected** with *"Updates were rejected because the remote contains work that you do not have locally"*, the repository wasn't empty (a README or licence was added at creation). Either delete and recreate it with no initial files, or — only if you are certain there is nothing on the remote you want to keep — run `git push -u --force origin main`.
+
+---
+
+### Step A6: Run It on Your Own Machine
+
+Once pushed, the repository is a complete, self-contained DevKit project. On any machine with **Docker (Compose v2)** and **Python 3**:
+
+```bash
+git clone https://github.com/<your-user>/<your-repo>.git my-duplo-devkit
+cd my-duplo-devkit
+./run.sh
+```
+
+`run.sh` asks for an admin **work email** (personal domains such as gmail.com are not accepted), sends a verification link you need to click, then asks for a password and an LLM provider.
+
+> **Your workshop LLM access does not come with you.** The workshop instance used Amazon Bedrock via a DuploCloud-managed account. On your own machine you'll supply your own — an Anthropic API key, your own AWS Bedrock credentials, or an Anthropic-compatible gateway (OpenRouter, LiteLLM, Bifrost, …). `run.sh` prompts for this.
+
+With the platform up at <http://localhost:4210>, rebuild and redeploy your extensions:
+
+```bash
+./scripts/build-extension.sh extensions/<your-extension>
+./scripts/deploy-all.sh
+```
+
+Or just launch Claude Code in the repo and use `/duplo-extension-dev`, exactly as you did in Step 5.
+
+---
+
+### Keeping the Framework Current
+
+Your repository is now a blend of the DevKit framework and your own extensions. To take framework updates later without touching your work:
+
+```bash
+./scripts/upgrade_dev_kit.sh --version main
+```
+
+This clones the official `duplocloud/devkit` and refreshes only framework-owned paths (`.claude/`, `scripts/`, `samples/`, `docs/`, `docker-compose.yml`, and similar). Anything under `extensions/`, plus your `.env` and any files you've added, is left untouched. Review the changes and commit them to your own repository as you would any other change.
+
+---
+
+### Alternative: Take Only the Extension Source
+
+If you'd rather not carry the whole framework, you can lift just the extension directories:
+
+```bash
+cd ~/devkit
+tar czf ~/my-extensions.tar.gz extensions/<your-extension> extensions/<your-other-extension>
+```
+
+Download the archive from the Code Server file explorer (right-click the file → **Download**), then drop the extracted directories into `extensions/` of a fresh DevKit clone later:
+
+```bash
+git clone https://github.com/duplocloud/devkit my-duplo-devkit && cd my-duplo-devkit
+# copy your extension directories into extensions/, then adopt as in Step A4
+```
+
+Adopting the whole checkout is still the better path for most people — it preserves the build scripts, Claude skills, and framework version your extensions were authored against.
+
+---
+
 ## Support
 
 If you run into any issues during the workshop, flag a facilitator or reach out via the workshop support channel.
